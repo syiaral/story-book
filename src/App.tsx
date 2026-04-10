@@ -125,6 +125,35 @@ const StoryBuddy = ({ isOpen, onClose }: { isOpen: boolean; onClose: () => void 
   );
 };
 
+// --- Magic Skeleton ---
+const MagicSkeleton = () => (
+  <div className="w-full h-full relative overflow-hidden bg-purple-50 flex items-center justify-center">
+    <motion.div
+      className="absolute inset-0 bg-gradient-to-r from-transparent via-white/40 to-transparent"
+      animate={{
+        x: ['-100%', '100%'],
+      }}
+      transition={{
+        repeat: Infinity,
+        duration: 1.5,
+        ease: "linear",
+      }}
+    />
+    <div className="flex flex-col items-center gap-4 text-purple-300 z-10">
+      <motion.div
+        animate={{ 
+          scale: [1, 1.1, 1],
+          rotate: [0, 5, -5, 0]
+        }}
+        transition={{ repeat: Infinity, duration: 3 }}
+      >
+        <Sparkles className="w-16 h-16 text-yellow-400" />
+      </motion.div>
+      <p className="font-bold text-purple-400">Painting the magic...</p>
+    </div>
+  </div>
+);
+
 // --- Main App Content ---
 function AppContent() {
   const [user, setUser] = useState<User | null>(null);
@@ -487,22 +516,31 @@ function AppContent() {
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 items-start">
               {/* Illustration */}
               <Card className="border-4 border-white rounded-[40px] shadow-2xl overflow-hidden aspect-square bg-purple-50 flex items-center justify-center relative group">
-                {story.pages[currentPage].imageUrl ? (
-                  <motion.img
-                    key={currentPage}
-                    initial={{ opacity: 0, scale: 1.1 }}
-                    animate={{ opacity: 1, scale: 1 }}
-                    src={story.pages[currentPage].imageUrl}
-                    alt="Story illustration"
-                    className="w-full h-full object-cover"
-                    referrerPolicy="no-referrer"
-                  />
-                ) : (
-                  <div className="flex flex-col items-center gap-4 text-purple-300">
-                    <Loader2 className="w-12 h-12 animate-spin" />
-                    <p className="font-bold">Painting the magic...</p>
-                  </div>
-                )}
+                <AnimatePresence mode="wait">
+                  {story.pages[currentPage].imageUrl ? (
+                    <motion.img
+                      key={`img-${currentPage}`}
+                      initial={{ opacity: 0, scale: 1.05 }}
+                      animate={{ opacity: 1, scale: 1 }}
+                      exit={{ opacity: 0, scale: 0.95 }}
+                      transition={{ duration: 0.5 }}
+                      src={story.pages[currentPage].imageUrl}
+                      alt="Story illustration"
+                      className="w-full h-full object-cover"
+                      referrerPolicy="no-referrer"
+                    />
+                  ) : (
+                    <motion.div
+                      key="skeleton"
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                      exit={{ opacity: 0 }}
+                      className="w-full h-full"
+                    >
+                      <MagicSkeleton />
+                    </motion.div>
+                  )}
+                </AnimatePresence>
                 
                 {/* Audio Button Overlay */}
                 {story.pages[currentPage].audioData && (
