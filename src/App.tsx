@@ -10,6 +10,26 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Label } from '@/components/ui/label';
 import { chatWithStoryBuddy, generateStory, generateIllustration, generateSpeech, type Story, type StoryPage } from '@/src/lib/gemini';
 import { cn } from '@/lib/utils';
+import { auth, db } from '@/src/lib/firebase';
+import { signInWithPopup, GoogleAuthProvider, onAuthStateChanged, User } from 'firebase/auth';
+import { collection, addDoc, query, where, onSnapshot, serverTimestamp, deleteDoc, doc, getDocFromServer } from 'firebase/firestore';
+
+// --- Firestore Error Handler ---
+enum OperationType { CREATE = 'create', UPDATE = 'update', DELETE = 'delete', LIST = 'list', GET = 'get', WRITE = 'write' }
+function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
+  const errInfo = {
+    error: error instanceof Error ? error.message : String(error),
+    authInfo: {
+      userId: auth.currentUser?.uid,
+      email: auth.currentUser?.email,
+      emailVerified: auth.currentUser?.emailVerified,
+    },
+    operationType,
+    path
+  };
+  console.error('Firestore Error: ', JSON.stringify(errInfo));
+  throw new Error(JSON.stringify(errInfo));
+}
 
 // --- Story Buddy (Chat) ---
 const StoryBuddy = ({ isOpen, onClose }: { isOpen: boolean; onClose: () => void }) => {
@@ -105,29 +125,110 @@ const StoryBuddy = ({ isOpen, onClose }: { isOpen: boolean; onClose: () => void 
   );
 };
 
-// --- Main App ---
-export default function App() {
+// --- Main App Content ---
+function AppContent() {
+  const [user, setUser] = useState<User | null>(null);
+  const [isAuthReady, setIsAuthReady] = useState(false);
   const [story, setStory] = useState<Story | null>(null);
+  const [savedStories, setSavedStories] = useState<(Story & { id: string })[]>([]);
+  const [storySeed, setStorySeed] = useState(0);
   const [currentPage, setCurrentPage] = useState(0);
   const [isGenerating, setIsGenerating] = useState(false);
   const [isBuddyOpen, setIsBuddyOpen] = useState(false);
+  const [isLibraryOpen, setIsLibraryOpen] = useState(false);
   const [topic, setTopic] = useState('');
   const [ageGroup, setAgeGroup] = useState('3-5');
   const [imageSize, setImageSize] = useState<"1K" | "2K" | "4K">("1K");
   const [loadingStep, setLoadingStep] = useState('');
-  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const [isSaving, setIsSaving] = useState(false);
+
+  // Auth Listener
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (u) => {
+      setUser(u);
+      setIsAuthReady(true);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // Connection Test
+  useEffect(() => {
+    async function testConnection() {
+      try {
+        await getDocFromServer(doc(db, 'test', 'connection'));
+      } catch (error) {
+        if (error instanceof Error && error.message.includes('the client is offline')) {
+          console.error("Please check your Firebase configuration.");
+        }
+      }
+    }
+    testConnection();
+  }, []);
+
+  // Saved Stories Listener
+  useEffect(() => {
+    if (!user) {
+      setSavedStories([]);
+      return;
+    }
+    const q = query(collection(db, 'stories'), where('userId', '==', user.uid));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const stories = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Story & { id: string }));
+      setSavedStories(stories.sort((a: any, b: any) => b.createdAt?.seconds - a.createdAt?.seconds));
+    }, (error) => {
+      handleFirestoreError(error, OperationType.LIST, 'stories');
+    });
+    return () => unsubscribe();
+  }, [user]);
+
+  const handleLogin = async () => {
+    try {
+      await signInWithPopup(auth, new GoogleAuthProvider());
+    } catch (error) {
+      console.error("Login failed:", error);
+    }
+  };
+
+  const handleSaveStory = async () => {
+    if (!user || !story || isSaving) return;
+    setIsSaving(true);
+    try {
+      await addDoc(collection(db, 'stories'), {
+        ...story,
+        userId: user.uid,
+        seed: storySeed,
+        topic,
+        ageGroup,
+        createdAt: serverTimestamp()
+      });
+      setIsSaving(false);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.CREATE, 'stories');
+    }
+  };
+
+  const handleDeleteStory = async (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    try {
+      await deleteDoc(doc(db, 'stories', id));
+    } catch (error) {
+      handleFirestoreError(error, OperationType.DELETE, 'stories');
+    }
+  };
 
   const handleCreateStory = async () => {
     if (!topic.trim()) return;
     setIsGenerating(true);
     setLoadingStep('Writing your magical story...');
     try {
+      const newSeed = Math.floor(Math.random() * 1000000);
+      setStorySeed(newSeed);
       const newStory = await generateStory(topic, ageGroup);
       setStory(newStory);
       setCurrentPage(0);
       
       // Pre-generate first page image and audio
-      await loadPageData(newStory, 0);
+      await loadPageData(newStory, 0, newSeed);
     } catch (error) {
       console.error(error);
     } finally {
@@ -136,7 +237,7 @@ export default function App() {
     }
   };
 
-  const loadPageData = async (currentStory: Story, pageIndex: number) => {
+  const loadPageData = async (currentStory: Story, pageIndex: number, seed: number) => {
     const page = currentStory.pages[pageIndex];
     if (page.imageUrl && page.audioData) return;
 
@@ -144,7 +245,7 @@ export default function App() {
     try {
       const updates: Partial<StoryPage> = {};
       if (!page.imageUrl) {
-        updates.imageUrl = await generateIllustration(page.imagePrompt, imageSize);
+        updates.imageUrl = await generateIllustration(page.imagePrompt, currentStory.visualStyle, seed, imageSize);
       }
       if (!page.audioData) {
         updates.audioData = await generateSpeech(page.text);
@@ -164,7 +265,7 @@ export default function App() {
     if (!story || currentPage >= story.pages.length - 1) return;
     const nextIndex = currentPage + 1;
     setCurrentPage(nextIndex);
-    await loadPageData(story, nextIndex);
+    await loadPageData(story, nextIndex, storySeed);
   };
 
   const handlePrev = () => {
@@ -216,18 +317,67 @@ export default function App() {
           <h1 className="text-3xl font-black text-purple-900 tracking-tight">Magic Storybook</h1>
         </div>
         <div className="flex items-center gap-4">
-          <Button
-            variant="outline"
-            onClick={() => setIsBuddyOpen(true)}
-            className="rounded-full border-2 border-purple-200 hover:bg-purple-50 text-purple-700 font-bold"
-          >
-            <MessageCircle className="w-5 h-5 mr-2" />
-            Story Buddy
-          </Button>
+          {user ? (
+            <>
+              <Button
+                variant="outline"
+                onClick={() => setIsLibraryOpen(!isLibraryOpen)}
+                className="rounded-full border-2 border-yellow-200 hover:bg-yellow-50 text-yellow-700 font-bold"
+              >
+                <BookOpen className="w-5 h-5 mr-2" />
+                My Library ({savedStories.length})
+              </Button>
+              <Button
+                variant="outline"
+                onClick={() => setIsBuddyOpen(true)}
+                className="rounded-full border-2 border-purple-200 hover:bg-purple-50 text-purple-700 font-bold"
+              >
+                <MessageCircle className="w-5 h-5 mr-2" />
+                Story Buddy
+              </Button>
+              <img src={user.photoURL || ''} alt="User" className="w-10 h-10 rounded-full border-2 border-purple-200" referrerPolicy="no-referrer" />
+            </>
+          ) : (
+            <Button onClick={handleLogin} className="rounded-full bg-purple-600 hover:bg-purple-700 font-bold">
+              Sign In to Save Stories
+            </Button>
+          )}
         </div>
       </header>
 
       <main className="max-w-5xl mx-auto px-6 py-8">
+        {isLibraryOpen && user && (
+          <motion.div initial={{ opacity: 0, y: -20 }} animate={{ opacity: 1, y: 0 }} className="mb-12 space-y-6">
+            <h2 className="text-3xl font-black text-purple-900">My Magical Collection</h2>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+              {savedStories.map((s) => (
+                <Card key={s.id} onClick={() => { setStory(s); setIsLibraryOpen(false); setCurrentPage(0); }} className="cursor-pointer hover:scale-105 transition-transform border-4 border-white rounded-3xl overflow-hidden shadow-xl group">
+                  <div className="aspect-video bg-purple-100 relative">
+                    {s.pages[0].imageUrl && <img src={s.pages[0].imageUrl} alt={s.title} className="w-full h-full object-cover" referrerPolicy="no-referrer" />}
+                    <Button
+                      variant="destructive"
+                      size="icon"
+                      onClick={(e) => handleDeleteStory(s.id, e)}
+                      className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity rounded-full w-8 h-8"
+                    >
+                      <X className="w-4 h-4" />
+                    </Button>
+                  </div>
+                  <CardContent className="p-4">
+                    <h3 className="font-bold text-lg text-purple-900 line-clamp-1">{s.title}</h3>
+                    <p className="text-sm text-purple-500">{s.pages.length} pages</p>
+                  </CardContent>
+                </Card>
+              ))}
+              {savedStories.length === 0 && (
+                <div className="col-span-full py-12 text-center text-purple-400 font-medium">
+                  Your library is empty! Create a story to start your collection. ✨
+                </div>
+              )}
+            </div>
+          </motion.div>
+        )}
+
         {!story ? (
           <motion.div
             initial={{ y: 20, opacity: 0 }}
@@ -313,13 +463,25 @@ export default function App() {
                 </Badge>
                 <h2 className="text-4xl font-black text-purple-900">{story.title}</h2>
               </div>
-              <Button
-                variant="ghost"
-                onClick={() => setStory(null)}
-                className="text-purple-400 hover:text-purple-600 font-bold"
-              >
-                Start New Adventure
-              </Button>
+              <div className="flex gap-3">
+                {user && !('id' in story) && (
+                  <Button
+                    onClick={handleSaveStory}
+                    disabled={isSaving}
+                    className="bg-yellow-400 hover:bg-yellow-500 text-purple-900 font-bold rounded-full"
+                  >
+                    {isSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4 mr-2" />}
+                    Save to Library
+                  </Button>
+                )}
+                <Button
+                  variant="ghost"
+                  onClick={() => setStory(null)}
+                  className="text-purple-400 hover:text-purple-600 font-bold"
+                >
+                  Start New Adventure
+                </Button>
+              </div>
             </div>
 
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 items-start">
@@ -411,5 +573,11 @@ export default function App() {
         <Sparkles className="w-48 h-48 text-purple-400" />
       </div>
     </div>
+  );
+}
+
+export default function App() {
+  return (
+    <AppContent />
   );
 }

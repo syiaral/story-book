@@ -1,0 +1,38 @@
+{
+  "entities": {
+    "Story": {
+      "title": "Story",
+      "description": "A generated story with multiple pages and illustrations.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "title": { "type": "string" },
+        "visualStyle": { "type": "string" },
+        "seed": { "type": "number" },
+        "ageGroup": { "type": "string" },
+        "topic": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "pages": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "text": { "type": "string" },
+              "imagePrompt": { "type": "string" },
+              "imageUrl": { "type": "string" },
+              "audioData": { "type": "string" }
+            }
+          }
+        }
+      },
+      "required": ["userId", "title", "visualStyle", "pages", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/stories/{storyId}": {
+      "schema": "Story",
+      "description": "Collection of saved stories."
+    }
+  }
+}

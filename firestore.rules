@@ -1,0 +1,56 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: stories
+    // Document ID: auto-generated
+    // Fields:
+    //   - id: string (optional)
+    //   - userId: string (required) - UID of the owner
+    //   - title: string (required) - Title of the story
+    //   - visualStyle: string (required) - Artistic style description
+    //   - seed: number (required) - Random seed for consistency
+    //   - ageGroup: string (required) - Targeted age group
+    //   - topic: string (required) - Original topic
+    //   - createdAt: timestamp (required) - Creation time
+    //   - pages: list (required) - Array of page objects
+    //
+    // ===============================================================
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isValidStory(data) {
+      return data.keys().hasAll(['userId', 'title', 'visualStyle', 'pages', 'createdAt', 'seed']) &&
+             data.userId == request.auth.uid &&
+             data.title is string && data.title.size() > 0 && data.title.size() < 200 &&
+             data.visualStyle is string && data.visualStyle.size() < 1000 &&
+             data.pages is list && data.pages.size() <= 10 &&
+             data.seed is number;
+    }
+
+    match /stories/{storyId} {
+      allow read: if isOwner(resource.data.userId);
+      allow create: if isAuthenticated() && isValidStory(request.resource.data);
+      allow update: if isOwner(resource.data.userId) && isValidStory(request.resource.data) && 
+                     request.resource.data.userId == resource.data.userId;
+      allow delete: if isOwner(resource.data.userId);
+    }
+    
+    match /users/{userId} {
+      allow read, write: if isOwner(userId);
+    }
+  }
+}
